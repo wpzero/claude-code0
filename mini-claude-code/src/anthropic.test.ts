@@ -81,4 +81,56 @@ describe('streamAnthropicAssistantMessage', () => {
     expect(message.content).toEqual([{ type: 'text', text: 'Hello world' }])
     expect(snapshots.at(-1)).toBe('Hello world')
   })
+
+  test('assembles tool input from partial json deltas without keeping an empty object prefix', async () => {
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          yield {
+            type: 'message_start',
+            message: { id: 'assistant_tool', content: [] },
+          }
+          yield {
+            type: 'content_block_start',
+            index: 0,
+            content_block: {
+              type: 'tool_use',
+              id: 'tool_1',
+              name: 'read_file',
+              input: {},
+            },
+          }
+          yield {
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: '{"path":"README.md"}',
+            },
+          }
+          yield { type: 'content_block_stop', index: 0 }
+          yield { type: 'message_stop' }
+        },
+      },
+    }
+
+    const message = await streamAnthropicAssistantMessage({
+      client,
+      model: 'test-model',
+      messages: [],
+      tools: [],
+    })
+
+    expect(message.content).toEqual([
+      {
+        type: 'tool_use',
+        id: 'tool_1',
+        name: 'read_file',
+        input: { path: 'README.md' },
+      },
+    ])
+  })
 })

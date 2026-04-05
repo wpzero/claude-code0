@@ -6,6 +6,7 @@ import type {
   ToolDefinition,
 } from './types.js'
 import type { AppConfig } from './config.js'
+import { debugLog } from './debug.js'
 import {
   applyStreamEventToAccumulator,
   createStreamAccumulator,
@@ -37,6 +38,12 @@ export function getAnthropicClientOptions(config: Pick<
 export function createAnthropicClient(
   config: Pick<AppConfig, 'apiKey' | 'authToken' | 'baseURL'>,
 ): AnthropicMessageClient {
+  debugLog('anthropic.client', {
+    baseURL: config.baseURL,
+    hasApiKey: Boolean(config.apiKey),
+    hasAuthToken: Boolean(config.authToken),
+  })
+
   return new Anthropic(
     getAnthropicClientOptions(config),
   ) as unknown as AnthropicMessageClient
@@ -48,7 +55,7 @@ export function buildAnthropicRequest(args: {
   tools: ToolDefinition[]
   stream?: boolean
 }): Record<string, unknown> {
-  return {
+  const request = {
     model: args.model,
     max_tokens: 2048,
     system: SYSTEM_PROMPT,
@@ -60,6 +67,33 @@ export function buildAnthropicRequest(args: {
       input_schema: tool.apiInputSchema,
     })),
   }
+
+  debugLog('anthropic.request', {
+    model: args.model,
+    stream: Boolean(args.stream),
+    messageCount: args.messages.length,
+    messages: args.messages.map(message => ({
+      role: message.role,
+      content:
+        typeof message.content === 'string'
+          ? { type: 'text', preview: message.content.slice(0, 80) }
+          : Array.isArray(message.content)
+            ? message.content.map(block =>
+                typeof block === 'object' && block && 'type' in block
+                  ? {
+                      type: (block as { type?: unknown }).type,
+                      ...(typeof (block as { name?: unknown }).name === 'string'
+                        ? { name: (block as { name: string }).name }
+                        : {}),
+                    }
+                  : { type: 'unknown' },
+              )
+            : { type: 'unknown' },
+    })),
+    tools: args.tools.map(tool => tool.name),
+  })
+
+  return request
 }
 
 export async function streamAnthropicAssistantMessage(args: {
@@ -70,20 +104,38 @@ export async function streamAnthropicAssistantMessage(args: {
   onSnapshot?(message: AssistantMessage): void
 }): Promise<AssistantMessage> {
   if (args.client.messages.stream) {
+    debugLog('anthropic.stream.start', {
+      mode: 'stream',
+      model: args.model,
+    })
     const accumulator = createStreamAccumulator()
     for await (const event of args.client.messages.stream(
       buildAnthropicRequest({
         model: args.model,
         messages: args.messages,
         tools: args.tools,
+        stream: true,
       }),
     )) {
+      const eventIndex = (event as Record<string, unknown>).index
+      debugLog('anthropic.stream.event', {
+        type: event.type,
+        index: typeof eventIndex === 'number' ? eventIndex : undefined,
+      })
       const snapshot = applyStreamEventToAccumulator(
         accumulator,
         event as AnthropicStreamEvent,
       )
       args.onSnapshot?.(snapshot)
     }
+    debugLog('anthropic.stream.final', {
+      assistantId: accumulator.id,
+      content: accumulator.content.map(block =>
+        block.type === 'text'
+          ? { type: 'text', textLength: block.text.length }
+          : { type: 'tool_use', name: block.name, input: block.input },
+      ),
+    })
     return {
       type: 'assistant',
       id: accumulator.id,
@@ -91,6 +143,10 @@ export async function streamAnthropicAssistantMessage(args: {
     }
   }
 
+  debugLog('anthropic.stream.start', {
+    mode: 'create_fallback',
+    model: args.model,
+  })
   const response = await args.client.messages.create(
     buildAnthropicRequest({
       model: args.model,

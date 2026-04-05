@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ToolResultMessage,
 } from '../types.js'
+import { debugLog } from '../debug.js'
 
 export function createId(prefix: string): string {
   const random = Math.random().toString(36).slice(2, 10)
@@ -151,6 +152,9 @@ export function applyStreamEventToAccumulator(
       if (typeof message?.id === 'string') {
         accumulator.id = message.id
       }
+      debugLog('stream.message_start', {
+        assistantId: accumulator.id,
+      })
       break
     }
     case 'content_block_start': {
@@ -163,9 +167,21 @@ export function applyStreamEventToAccumulator(
           type: 'text',
           text: typeof contentBlock.text === 'string' ? contentBlock.text : '',
         }
+        debugLog('stream.content_block_start', {
+          index,
+          blockType: 'text',
+        })
       }
 
       if (contentBlock.type === 'tool_use') {
+        const initialInput = isRecord(contentBlock.input)
+          ? contentBlock.input
+          : {}
+        const initialBuffer =
+          Object.keys(initialInput).length > 0
+            ? JSON.stringify(initialInput)
+            : ''
+
         accumulator.content[index] = {
           type: 'tool_use',
           id:
@@ -174,11 +190,24 @@ export function applyStreamEventToAccumulator(
               : createId('tool_use'),
           name:
             typeof contentBlock.name === 'string' ? contentBlock.name : 'unknown',
-          input: isRecord(contentBlock.input) ? contentBlock.input : {},
+          input: initialInput,
         }
-        accumulator.toolJsonBuffers[index] = JSON.stringify(
-          isRecord(contentBlock.input) ? contentBlock.input : {},
-        )
+        accumulator.toolJsonBuffers[index] = initialBuffer
+        debugLog('stream.content_block_start', {
+          index,
+          blockType: 'tool_use',
+          toolId: accumulator.content[index]?.type === 'tool_use'
+            ? accumulator.content[index].id
+            : undefined,
+          toolName: accumulator.content[index]?.type === 'tool_use'
+            ? accumulator.content[index].name
+            : undefined,
+          initialInput:
+            accumulator.content[index]?.type === 'tool_use'
+              ? accumulator.content[index].input
+              : undefined,
+          initialBuffer,
+        })
       }
       break
     }
@@ -195,6 +224,12 @@ export function applyStreamEventToAccumulator(
 
       if (delta.type === 'text_delta' && block.type === 'text') {
         block.text += typeof delta.text === 'string' ? delta.text : ''
+        debugLog('stream.text_delta', {
+          index,
+          deltaLength:
+            typeof delta.text === 'string' ? delta.text.length : undefined,
+          totalLength: block.text.length,
+        })
       }
 
       if (delta.type === 'input_json_delta' && block.type === 'tool_use') {
@@ -202,6 +237,16 @@ export function applyStreamEventToAccumulator(
         const next = existing + (typeof delta.partial_json === 'string' ? delta.partial_json : '')
         accumulator.toolJsonBuffers[index] = next
         const parsed = parseJsonObject(next)
+        debugLog('stream.input_json_delta', {
+          index,
+          toolName: block.name,
+          partialJson:
+            typeof delta.partial_json === 'string' ? delta.partial_json : '',
+          existingBuffer: existing,
+          nextBuffer: next,
+          parseSucceeded: Object.keys(parsed).length > 0,
+          parsedInput: parsed,
+        })
         if (Object.keys(parsed).length > 0) {
           block.input = parsed
         }
@@ -213,9 +258,22 @@ export function applyStreamEventToAccumulator(
       const block = accumulator.content[index]
       if (index >= 0 && block?.type === 'tool_use') {
         const parsed = parseJsonObject(accumulator.toolJsonBuffers[index] || '')
+        debugLog('stream.content_block_stop', {
+          index,
+          blockType: 'tool_use',
+          toolName: block.name,
+          finalBuffer: accumulator.toolJsonBuffers[index] || '',
+          finalParsedInput: parsed,
+        })
         if (Object.keys(parsed).length > 0) {
           block.input = parsed
         }
+      } else if (index >= 0 && block?.type === 'text') {
+        debugLog('stream.content_block_stop', {
+          index,
+          blockType: 'text',
+          textLength: block.text.length,
+        })
       }
       break
     }

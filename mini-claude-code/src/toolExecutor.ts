@@ -10,6 +10,7 @@ import type {
   ToolDefinition,
   ToolResultMessage,
 } from './types.js'
+import { debugLog } from './debug.js'
 
 function formatZodError(error: z.ZodError): string {
   return error.issues
@@ -23,6 +24,11 @@ export async function executeToolCall(args: {
   context: ToolContext
   onEvent?: (event: QueryLoopEvent) => void
 }): Promise<ToolResultMessage> {
+  debugLog('tool.execute.start', {
+    toolName: args.request.name,
+    rawInput: args.request.input,
+  })
+
   const tool = args.tools.find(candidate => candidate.name === args.request.name)
   if (!tool) {
     return createToolResultMessage({
@@ -45,6 +51,11 @@ export async function executeToolCall(args: {
 
   const parsed = tool.inputSchema.safeParse(args.request.input)
   if (!parsed.success) {
+    debugLog('tool.execute.validation_error', {
+      toolName: args.request.name,
+      rawInput: args.request.input,
+      error: formatZodError(parsed.error),
+    })
     return createToolResultMessage({
       toolUseId: args.request.id,
       toolName: args.request.name,
@@ -55,6 +66,12 @@ export async function executeToolCall(args: {
 
   try {
     const result = await tool.execute(parsed.data, args.context)
+    debugLog('tool.execute.success', {
+      toolName: args.request.name,
+      parsedInput: parsed.data,
+      isError: Boolean(result.isError),
+      contentLength: result.content.length,
+    })
     return createToolResultMessage({
       toolUseId: args.request.id,
       toolName: args.request.name,
@@ -62,6 +79,11 @@ export async function executeToolCall(args: {
       isError: result.isError,
     })
   } catch (error) {
+    debugLog('tool.execute.exception', {
+      toolName: args.request.name,
+      parsedInput: parsed.data,
+      error: error instanceof Error ? error.message : String(error),
+    })
     return createToolResultMessage({
       toolUseId: args.request.id,
       toolName: args.request.name,

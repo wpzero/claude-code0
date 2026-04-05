@@ -10,6 +10,7 @@ import type {
   QueryLoopEvent,
   ToolDefinition,
 } from './types.js'
+import { debugLog } from './debug.js'
 
 export async function runQueryLoop(params: {
   client: AnthropicMessageClient
@@ -27,14 +28,30 @@ export async function runQueryLoop(params: {
 
   for (let iteration = 0; iteration < params.maxIterations; iteration += 1) {
     try {
+      const apiMessages = toAnthropicMessages(history)
+      debugLog('query.iteration.start', {
+        iteration: iteration + 1,
+        historyCount: history.length,
+        apiMessageCount: apiMessages.length,
+      })
+
       const assistantMessage = await streamAnthropicAssistantMessage({
         client: params.client,
         model: params.model,
-        messages: toAnthropicMessages(history),
+        messages: apiMessages,
         tools: params.tools,
         onSnapshot: message => {
           params.onEvent?.({ type: 'assistant_stream', message })
         },
+      })
+      debugLog('query.assistant.final', {
+        iteration: iteration + 1,
+        assistantId: assistantMessage.id,
+        content: assistantMessage.content.map(block =>
+          block.type === 'text'
+            ? { type: 'text', textLength: block.text.length }
+            : { type: 'tool_use', name: block.name, input: block.input },
+        ),
       })
       history.push(assistantMessage)
       params.onEvent?.({ type: 'assistant', message: assistantMessage })
@@ -48,6 +65,11 @@ export async function runQueryLoop(params: {
       }
 
       for (const toolCall of toolCalls) {
+        debugLog('query.tool_call', {
+          iteration: iteration + 1,
+          name: toolCall.name,
+          input: toolCall.input,
+        })
         const toolResult = await executeToolCall({
           request: toolCall,
           tools: params.tools,
@@ -55,9 +77,18 @@ export async function runQueryLoop(params: {
           onEvent: params.onEvent,
         })
         history.push(toolResult)
+        debugLog('query.tool_result', {
+          iteration: iteration + 1,
+          toolName: toolResult.toolName,
+          isError: toolResult.isError,
+          contentLength: toolResult.content.length,
+        })
         params.onEvent?.({ type: 'tool_result', message: toolResult })
       }
     } catch (error) {
+      debugLog('query.error', {
+        error: error instanceof Error ? error.message : String(error),
+      })
       const message = {
         type: 'system' as const,
         id: createId('system'),

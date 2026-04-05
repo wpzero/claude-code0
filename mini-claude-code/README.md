@@ -58,6 +58,34 @@ bun run src/cli.tsx
 
 This MVP runs directly from source with Bun. It does not require a separate build step.
 
+## Debugging
+
+Enable verbose debug logs with:
+
+```bash
+MINI_CLAUDE_CODE_DEBUG=1
+```
+
+Logs are written to `stderr` and include:
+
+- Anthropic-compatible request summaries
+- streaming event processing
+- tool-use JSON buffer accumulation
+- tool execution inputs and validation errors
+
+MiniMax debugging example:
+
+```bash
+cd mini-claude-code
+ANTHROPIC_BASE_URL="https://api.minimaxi.com/anthropic" \
+ANTHROPIC_AUTH_TOKEN="your_minimax_token" \
+ANTHROPIC_MODEL="MiniMax-M2.7" \
+MINI_CLAUDE_CODE_DEBUG=1 \
+bun run src/cli.tsx
+```
+
+Secrets are redacted in debug output.
+
 ## Scripts
 
 ```bash

@@ -22,6 +22,7 @@ export const grepFilesTool: ToolDefinition = {
     required: ['pattern'],
     additionalProperties: false,
   },
+  requiresApproval: 'never',
   isReadOnly: true,
   isConcurrencySafe: true,
   async execute(input, context) {

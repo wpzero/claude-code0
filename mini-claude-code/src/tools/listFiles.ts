@@ -26,6 +26,7 @@ export const listFilesTool: ToolDefinition = {
     },
     additionalProperties: false,
   },
+  requiresApproval: 'never',
   isReadOnly: true,
   isConcurrencySafe: true,
   async execute(input, context) {

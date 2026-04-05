@@ -23,6 +23,7 @@ export const writeFileTool: ToolDefinition = {
     required: ['path', 'content'],
     additionalProperties: false,
   },
+  requiresApproval: 'always',
   isReadOnly: false,
   isConcurrencySafe: false,
   async execute(input, context) {

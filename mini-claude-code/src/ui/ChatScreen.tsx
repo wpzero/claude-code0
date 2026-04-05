@@ -6,8 +6,11 @@ import type {
   AnthropicMessageClient,
   ChatMessage,
   QueryLoopEvent,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
 } from '../types.js'
 import { createId } from '../utils/messageTransform.js'
+import { ApprovalPrompt } from './ApprovalPrompt.js'
 import { MessageList } from './MessageList.js'
 import { PromptInput } from './PromptInput.js'
 import { StatusBar } from './StatusBar.js'
@@ -29,7 +32,12 @@ export function ChatScreen(props: {
   const [streamingAssistant, setStreamingAssistant] =
     React.useState<ChatMessage | null>(null)
   const [isBusy, setIsBusy] = React.useState(false)
+  const [pendingApproval, setPendingApproval] =
+    React.useState<ToolApprovalRequest | null>(null)
   const tools = React.useMemo(() => getTools(), [])
+  const approvalResolverRef = React.useRef<
+    ((decision: ToolApprovalDecision) => void) | null
+  >(null)
 
   const appendEvent = React.useCallback((event: QueryLoopEvent) => {
     if (event.type === 'assistant_stream') {
@@ -49,13 +57,36 @@ export function ChatScreen(props: {
       return
     }
 
+    if (event.type === 'tool_approval_requested') {
+      return
+    }
+
     setStreamingAssistant(null)
     setMessages(current => [...current, event.message])
   }, [])
 
+  const handleApprovalDecision = React.useCallback(
+    (decision: ToolApprovalDecision) => {
+      const resolve = approvalResolverRef.current
+      approvalResolverRef.current = null
+      setPendingApproval(null)
+      resolve?.(decision)
+    },
+    [],
+  )
+
+  const requestToolApproval = React.useCallback(
+    (request: ToolApprovalRequest) =>
+      new Promise<ToolApprovalDecision>(resolve => {
+        approvalResolverRef.current = resolve
+        setPendingApproval(request)
+      }),
+    [],
+  )
+
   const handleSubmit = React.useCallback(
     async (text: string) => {
-      if (isBusy) {
+      if (isBusy || pendingApproval) {
         return
       }
 
@@ -79,10 +110,13 @@ export function ChatScreen(props: {
           maxIterations: props.maxIterations,
           workdir: props.workdir,
           onEvent: appendEvent,
+          requestToolApproval,
         })
 
         setMessages(result.history)
       } finally {
+        approvalResolverRef.current = null
+        setPendingApproval(null)
         setIsBusy(false)
       }
     },
@@ -90,10 +124,12 @@ export function ChatScreen(props: {
       appendEvent,
       isBusy,
       messages,
+      pendingApproval,
       props.client,
       props.maxIterations,
       props.model,
       props.workdir,
+      requestToolApproval,
       tools,
     ],
   )
@@ -107,6 +143,7 @@ export function ChatScreen(props: {
         model={props.model}
         workdir={props.workdir}
         isBusy={isBusy}
+        isAwaitingApproval={Boolean(pendingApproval)}
       />
       <Box marginTop={1} marginBottom={1} flexDirection="column">
         <MessageList
@@ -115,8 +152,19 @@ export function ChatScreen(props: {
           }
         />
       </Box>
-      <PromptInput disabled={isBusy} onSubmit={handleSubmit} />
-      <Text color="gray">Enter to send. Ctrl+C to exit.</Text>
+      {pendingApproval ? (
+        <ApprovalPrompt
+          request={pendingApproval}
+          onDecision={handleApprovalDecision}
+        />
+      ) : (
+        <PromptInput disabled={isBusy} onSubmit={handleSubmit} />
+      )}
+      <Text color="gray">
+        {pendingApproval
+          ? 'Approval mode active. Ctrl+C to exit.'
+          : 'Enter to send. Ctrl+C to exit.'}
+      </Text>
     </Box>
   )
 }

@@ -2,11 +2,14 @@ import { streamAnthropicAssistantMessage } from './anthropic.js'
 import { executeToolCall } from './toolExecutor.js'
 import {
   createId,
+  createToolResultMessage,
   toAnthropicMessages,
 } from './utils/messageTransform.js'
 import type {
   AnthropicMessageClient,
   ChatMessage,
+  ToolApprovalDecision,
+  ToolApprovalRequest,
   QueryLoopEvent,
   ToolDefinition,
 } from './types.js'
@@ -20,6 +23,9 @@ export async function runQueryLoop(params: {
   maxIterations: number
   workdir: string
   onEvent?: (event: QueryLoopEvent) => void
+  requestToolApproval?: (
+    request: ToolApprovalRequest,
+  ) => Promise<ToolApprovalDecision>
 }): Promise<{
   history: ChatMessage[]
   stopReason: 'completed' | 'max_iterations' | 'error'
@@ -65,6 +71,41 @@ export async function runQueryLoop(params: {
       }
 
       for (const toolCall of toolCalls) {
+        const tool = params.tools.find(candidate => candidate.name === toolCall.name)
+        if (tool?.requiresApproval === 'always') {
+          const request: ToolApprovalRequest = {
+            toolCall,
+            tool: {
+              name: tool.name,
+              description: tool.description,
+              requiresApproval: tool.requiresApproval,
+              isReadOnly: tool.isReadOnly,
+            },
+          }
+          params.onEvent?.({ type: 'tool_approval_requested', request })
+          const decision = params.requestToolApproval
+            ? await params.requestToolApproval(request)
+            : 'rejected'
+
+          debugLog('query.tool_approval', {
+            iteration: iteration + 1,
+            name: toolCall.name,
+            decision,
+          })
+
+          if (decision === 'rejected') {
+            const toolResult = createToolResultMessage({
+              toolUseId: toolCall.id,
+              toolName: toolCall.name,
+              content: `Tool execution rejected by user: ${toolCall.name}`,
+              isError: true,
+            })
+            history.push(toolResult)
+            params.onEvent?.({ type: 'tool_result', message: toolResult })
+            continue
+          }
+        }
+
         debugLog('query.tool_call', {
           iteration: iteration + 1,
           name: toolCall.name,

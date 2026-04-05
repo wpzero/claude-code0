@@ -19,6 +19,7 @@ export const readFileTool: ToolDefinition = {
     required: ['path'],
     additionalProperties: false,
   },
+  requiresApproval: 'never',
   isReadOnly: true,
   isConcurrencySafe: true,
   async execute(input, context) {

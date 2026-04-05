@@ -25,6 +25,7 @@ export const bashTool: ToolDefinition = {
     required: ['command'],
     additionalProperties: false,
   },
+  requiresApproval: 'always',
   isReadOnly: false,
   isConcurrencySafe: false,
   async execute(input, context) {

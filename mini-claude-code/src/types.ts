@@ -53,6 +53,8 @@ export type ToolExecutionResult = {
   isError?: boolean
 }
 
+export type ToolApprovalRequirement = 'never' | 'always'
+
 export type ToolContext = {
   workdir: string
 }
@@ -67,6 +69,7 @@ export type ToolDefinition = {
     required?: string[]
     additionalProperties?: boolean
   }
+  requiresApproval: ToolApprovalRequirement
   isReadOnly: boolean
   isConcurrencySafe: boolean
   execute(
@@ -77,10 +80,21 @@ export type ToolDefinition = {
 
 export type ToolCallRequest = AssistantToolUseBlock
 
+export type ToolApprovalRequest = {
+  toolCall: ToolCallRequest
+  tool: Pick<
+    ToolDefinition,
+    'name' | 'description' | 'requiresApproval' | 'isReadOnly'
+  >
+}
+
+export type ToolApprovalDecision = 'approved' | 'rejected'
+
 export type QueryLoopEvent =
   | { type: 'assistant_stream'; message: AssistantMessage }
   | { type: 'assistant'; message: AssistantMessage }
   | { type: 'tool_result'; message: ToolResultMessage }
+  | { type: 'tool_approval_requested'; request: ToolApprovalRequest }
   | { type: 'system'; message: SystemMessage }
 
 export type AnthropicStreamEvent = {

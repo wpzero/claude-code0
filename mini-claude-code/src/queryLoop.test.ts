@@ -9,6 +9,7 @@ import type {
   AnthropicMessageClient,
   AssistantMessage,
   ChatMessage,
+  ToolApprovalRequest,
 } from './types.js'
 
 describe('messageTransform', () => {
@@ -228,5 +229,183 @@ describe('runQueryLoop', () => {
     })
 
     expect(result.stopReason).toBe('max_iterations')
+  })
+
+  test('requests approval before executing write tools', async () => {
+    const approvals: ToolApprovalRequest[] = []
+    const streams = [
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_write',
+            name: 'write_file',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"path":"note.txt","content":"hello"}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Write completed.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+    ]
+
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          const next = streams.shift() || []
+          for (const event of next) {
+            yield event as never
+          }
+        },
+      },
+    }
+
+    const result = await runQueryLoop({
+      client,
+      model: 'test-model',
+      history: [{ type: 'user', id: createId('user'), text: 'write file' }],
+      tools: getTools(),
+      maxIterations: 4,
+      workdir: process.cwd(),
+      requestToolApproval: async request => {
+        approvals.push(request)
+        return 'approved'
+      },
+    })
+
+    expect(result.stopReason).toBe('completed')
+    expect(approvals).toHaveLength(1)
+    expect(approvals[0]?.tool.name).toBe('write_file')
+    expect(
+      result.history.some(
+        message =>
+          message.type === 'tool_result' &&
+          message.toolName === 'write_file' &&
+          message.isError === false,
+      ),
+    ).toBe(true)
+  })
+
+  test('returns an error tool_result when approval is rejected', async () => {
+    const streams = [
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_write',
+            name: 'write_file',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"path":"note.txt","content":"hello"}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'I will avoid the write.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+    ]
+    const events: string[] = []
+
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          const next = streams.shift() || []
+          for (const event of next) {
+            yield event as never
+          }
+        },
+      },
+    }
+
+    const result = await runQueryLoop({
+      client,
+      model: 'test-model',
+      history: [{ type: 'user', id: createId('user'), text: 'write file' }],
+      tools: getTools(),
+      maxIterations: 4,
+      workdir: process.cwd(),
+      onEvent: event => {
+        events.push(event.type)
+      },
+      requestToolApproval: async () => 'rejected',
+    })
+
+    expect(result.stopReason).toBe('completed')
+    expect(events).toContain('tool_approval_requested')
+    expect(
+      result.history.some(
+        message =>
+          message.type === 'tool_result' &&
+          message.toolName === 'write_file' &&
+          message.isError === true &&
+          message.content.includes('rejected by user'),
+      ),
+    ).toBe(true)
   })
 })

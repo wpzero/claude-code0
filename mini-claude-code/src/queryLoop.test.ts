@@ -68,29 +68,75 @@ describe('messageTransform', () => {
 
 describe('runQueryLoop', () => {
   test('completes after a tool call and follow-up response', async () => {
-    const responses = [
-      {
-        id: 'assistant_1',
-        content: [
-          { type: 'text', text: 'I will inspect it.' },
-          {
+    const streams = [
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'I will inspect it.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        {
+          type: 'content_block_start',
+          index: 1,
+          content_block: {
             type: 'tool_use',
             id: 'tool_1',
             name: 'list_files',
-            input: { path: '.', recursive: false },
+            input: {},
           },
-        ],
-      },
-      {
-        id: 'assistant_2',
-        content: [{ type: 'text', text: 'Done.' }],
-      },
+        },
+        {
+          type: 'content_block_delta',
+          index: 1,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"path":".","recursive":false}',
+          },
+        },
+        { type: 'content_block_stop', index: 1 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Done.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
     ]
+    const events: string[] = []
 
     const client: AnthropicMessageClient = {
       messages: {
         async create() {
-          return responses.shift() as never
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          const next = streams.shift() || []
+          for (const event of next) {
+            yield event as never
+          }
         },
       },
     }
@@ -106,6 +152,9 @@ describe('runQueryLoop', () => {
       tools: getTools(),
       maxIterations: 4,
       workdir: process.cwd(),
+      onEvent: event => {
+        events.push(event.type)
+      },
     })
 
     expect(result.stopReason).toBe('completed')
@@ -118,6 +167,7 @@ describe('runQueryLoop', () => {
     expect(
       result.history.filter(message => message.type === 'assistant').length,
     ).toBe(2)
+    expect(events).toContain('assistant_stream')
   })
 
   test('stops on iteration limit', async () => {
@@ -137,10 +187,33 @@ describe('runQueryLoop', () => {
     const client: AnthropicMessageClient = {
       messages: {
         async create() {
-          return {
-            id: loopingAssistant.id,
-            content: loopingAssistant.content,
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          yield {
+            type: 'message_start',
+            message: { id: loopingAssistant.id, content: [] },
           } as never
+          yield {
+            type: 'content_block_start',
+            index: 0,
+            content_block: {
+              type: 'tool_use',
+              id: 'tool_loop',
+              name: 'list_files',
+              input: {},
+            },
+          } as never
+          yield {
+            type: 'content_block_delta',
+            index: 0,
+            delta: {
+              type: 'input_json_delta',
+              partial_json: '{"path":".","recursive":false}',
+            },
+          } as never
+          yield { type: 'content_block_stop', index: 0 } as never
+          yield { type: 'message_stop' } as never
         },
       },
     }

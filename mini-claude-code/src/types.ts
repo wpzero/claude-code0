@@ -78,9 +78,15 @@ export type ToolDefinition = {
 export type ToolCallRequest = AssistantToolUseBlock
 
 export type QueryLoopEvent =
+  | { type: 'assistant_stream'; message: AssistantMessage }
   | { type: 'assistant'; message: AssistantMessage }
   | { type: 'tool_result'; message: ToolResultMessage }
   | { type: 'system'; message: SystemMessage }
+
+export type AnthropicStreamEvent = {
+  type: string
+  [key: string]: unknown
+}
 
 export type AnthropicMessageClient = {
   messages: {
@@ -88,5 +94,6 @@ export type AnthropicMessageClient = {
       id?: string
       content?: Array<Record<string, unknown>>
     }>
+    stream?(input: Record<string, unknown>): AsyncIterable<AnthropicStreamEvent>
   }
 }

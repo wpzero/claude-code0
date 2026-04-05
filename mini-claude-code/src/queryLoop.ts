@@ -1,8 +1,7 @@
-import { buildAnthropicRequest } from './anthropic.js'
+import { streamAnthropicAssistantMessage } from './anthropic.js'
 import { executeToolCall } from './toolExecutor.js'
 import {
   createId,
-  fromAnthropicAssistantMessage,
   toAnthropicMessages,
 } from './utils/messageTransform.js'
 import type {
@@ -28,15 +27,15 @@ export async function runQueryLoop(params: {
 
   for (let iteration = 0; iteration < params.maxIterations; iteration += 1) {
     try {
-      const response = await params.client.messages.create(
-        buildAnthropicRequest({
-          model: params.model,
-          messages: toAnthropicMessages(history),
-          tools: params.tools,
-        }),
-      )
-
-      const assistantMessage = fromAnthropicAssistantMessage(response)
+      const assistantMessage = await streamAnthropicAssistantMessage({
+        client: params.client,
+        model: params.model,
+        messages: toAnthropicMessages(history),
+        tools: params.tools,
+        onSnapshot: message => {
+          params.onEvent?.({ type: 'assistant_stream', message })
+        },
+      })
       history.push(assistantMessage)
       params.onEvent?.({ type: 'assistant', message: assistantMessage })
 

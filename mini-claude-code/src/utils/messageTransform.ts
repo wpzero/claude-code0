@@ -1,5 +1,6 @@
 import type {
   AnthropicMessageClient,
+  AnthropicStreamEvent,
   AssistantMessage,
   AssistantTextBlock,
   AssistantToolUseBlock,
@@ -110,5 +111,121 @@ export function createToolResultMessage(args: {
     toolName: args.toolName,
     content: args.content,
     isError: Boolean(args.isError),
+  }
+}
+
+type StreamAccumulator = {
+  id: string
+  content: Array<AssistantTextBlock | AssistantToolUseBlock>
+  toolJsonBuffers: Record<number, string>
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object'
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value)
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+export function createStreamAccumulator(id = createId('assistant')): StreamAccumulator {
+  return {
+    id,
+    content: [],
+    toolJsonBuffers: {},
+  }
+}
+
+export function applyStreamEventToAccumulator(
+  accumulator: StreamAccumulator,
+  event: AnthropicStreamEvent,
+): AssistantMessage {
+  switch (event.type) {
+    case 'message_start': {
+      const message = isRecord(event.message) ? event.message : undefined
+      if (typeof message?.id === 'string') {
+        accumulator.id = message.id
+      }
+      break
+    }
+    case 'content_block_start': {
+      const index =
+        typeof event.index === 'number' ? event.index : accumulator.content.length
+      const contentBlock = isRecord(event.content_block) ? event.content_block : {}
+
+      if (contentBlock.type === 'text') {
+        accumulator.content[index] = {
+          type: 'text',
+          text: typeof contentBlock.text === 'string' ? contentBlock.text : '',
+        }
+      }
+
+      if (contentBlock.type === 'tool_use') {
+        accumulator.content[index] = {
+          type: 'tool_use',
+          id:
+            typeof contentBlock.id === 'string'
+              ? contentBlock.id
+              : createId('tool_use'),
+          name:
+            typeof contentBlock.name === 'string' ? contentBlock.name : 'unknown',
+          input: isRecord(contentBlock.input) ? contentBlock.input : {},
+        }
+        accumulator.toolJsonBuffers[index] = JSON.stringify(
+          isRecord(contentBlock.input) ? contentBlock.input : {},
+        )
+      }
+      break
+    }
+    case 'content_block_delta': {
+      const index = typeof event.index === 'number' ? event.index : -1
+      if (index < 0) {
+        break
+      }
+      const delta = isRecord(event.delta) ? event.delta : {}
+      const block = accumulator.content[index]
+      if (!block) {
+        break
+      }
+
+      if (delta.type === 'text_delta' && block.type === 'text') {
+        block.text += typeof delta.text === 'string' ? delta.text : ''
+      }
+
+      if (delta.type === 'input_json_delta' && block.type === 'tool_use') {
+        const existing = accumulator.toolJsonBuffers[index] || ''
+        const next = existing + (typeof delta.partial_json === 'string' ? delta.partial_json : '')
+        accumulator.toolJsonBuffers[index] = next
+        const parsed = parseJsonObject(next)
+        if (Object.keys(parsed).length > 0) {
+          block.input = parsed
+        }
+      }
+      break
+    }
+    case 'content_block_stop': {
+      const index = typeof event.index === 'number' ? event.index : -1
+      const block = accumulator.content[index]
+      if (index >= 0 && block?.type === 'tool_use') {
+        const parsed = parseJsonObject(accumulator.toolJsonBuffers[index] || '')
+        if (Object.keys(parsed).length > 0) {
+          block.input = parsed
+        }
+      }
+      break
+    }
+    default:
+      break
+  }
+
+  return {
+    type: 'assistant',
+    id: accumulator.id,
+    content: accumulator.content.filter(Boolean),
   }
 }

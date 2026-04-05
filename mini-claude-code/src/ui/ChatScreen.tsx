@@ -26,20 +26,30 @@ export function ChatScreen(props: {
       text: 'Mini Claude Code ready. Enter a prompt to start.',
     },
   ])
+  const [streamingAssistant, setStreamingAssistant] =
+    React.useState<ChatMessage | null>(null)
   const [isBusy, setIsBusy] = React.useState(false)
   const tools = React.useMemo(() => getTools(), [])
 
   const appendEvent = React.useCallback((event: QueryLoopEvent) => {
+    if (event.type === 'assistant_stream') {
+      setStreamingAssistant(event.message)
+      return
+    }
+
     if (event.type === 'assistant') {
+      setStreamingAssistant(null)
       setMessages(current => [...current, event.message])
       return
     }
 
     if (event.type === 'tool_result') {
+      setStreamingAssistant(null)
       setMessages(current => [...current, event.message])
       return
     }
 
+    setStreamingAssistant(null)
     setMessages(current => [...current, event.message])
   }, [])
 
@@ -57,6 +67,7 @@ export function ChatScreen(props: {
       }
 
       const nextHistory = [...messages, userMessage]
+      setStreamingAssistant(null)
       setMessages(nextHistory)
 
       try {
@@ -98,7 +109,11 @@ export function ChatScreen(props: {
         isBusy={isBusy}
       />
       <Box marginTop={1} marginBottom={1} flexDirection="column">
-        <MessageList messages={messages} />
+        <MessageList
+          messages={
+            streamingAssistant ? [...messages, streamingAssistant] : messages
+          }
+        />
       </Box>
       <PromptInput disabled={isBusy} onSubmit={handleSubmit} />
       <Text color="gray">Enter to send. Ctrl+C to exit.</Text>

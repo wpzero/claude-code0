@@ -8,12 +8,42 @@ import {
 import type {
   AnthropicMessageClient,
   ChatMessage,
+  SubagentRequest,
   ToolApprovalDecision,
   ToolApprovalRequest,
   QueryLoopEvent,
   ToolDefinition,
 } from './types.js'
 import { debugLog } from './debug.js'
+
+const SUBAGENT_SYSTEM_PROMPT = [
+  'You are Mini Claude Code Worker, a focused subagent.',
+  'Complete only the assigned task and return a concise final answer.',
+  'Use the provided tools directly when needed.',
+  'Do not ask follow-up questions.',
+  'Do not call spawn_agent.',
+].join(' ')
+
+function extractFinalAssistantText(history: ChatMessage[]): string {
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index]
+    if (message?.type !== 'assistant') {
+      continue
+    }
+
+    const text = message.content
+      .filter(block => block.type === 'text')
+      .map(block => block.text.trim())
+      .filter(Boolean)
+      .join('\n')
+
+    if (text) {
+      return text
+    }
+  }
+
+  return ''
+}
 
 export async function runQueryLoop(params: {
   client: AnthropicMessageClient
@@ -22,6 +52,7 @@ export async function runQueryLoop(params: {
   tools: ToolDefinition[]
   maxIterations: number
   workdir: string
+  systemPrompt?: string
   onEvent?: (event: QueryLoopEvent) => void
   requestToolApproval?: (
     request: ToolApprovalRequest,
@@ -46,6 +77,7 @@ export async function runQueryLoop(params: {
         model: params.model,
         messages: apiMessages,
         tools: params.tools,
+        systemPrompt: params.systemPrompt,
         onSnapshot: message => {
           params.onEvent?.({ type: 'assistant_stream', message })
         },
@@ -114,7 +146,51 @@ export async function runQueryLoop(params: {
         const toolResult = await executeToolCall({
           request: toolCall,
           tools: params.tools,
-          context: { workdir: params.workdir },
+          context: {
+            workdir: params.workdir,
+            client: params.client,
+            model: params.model,
+            maxIterations: params.maxIterations,
+            runSubagent: async (request: SubagentRequest) => {
+              const childTools = params.tools.filter(tool => {
+                if (tool.name === 'spawn_agent') {
+                  return false
+                }
+                if (!request.allowedTools || request.allowedTools.length === 0) {
+                  return true
+                }
+                return request.allowedTools.includes(tool.name)
+              })
+
+              if (childTools.length === 0) {
+                throw new Error('Subagent has no available tools.')
+              }
+
+              const childResult = await runQueryLoop({
+                client: params.client,
+                model: params.model,
+                history: [
+                  {
+                    type: 'user',
+                    id: createId('user'),
+                    text: request.prompt,
+                  },
+                ],
+                tools: childTools,
+                maxIterations: Math.min(params.maxIterations, 6),
+                workdir: params.workdir,
+                systemPrompt: SUBAGENT_SYSTEM_PROMPT,
+                requestToolApproval: params.requestToolApproval,
+              })
+
+              const finalText = extractFinalAssistantText(childResult.history)
+              if (finalText) {
+                return finalText
+              }
+
+              return `Subagent stopped with reason: ${childResult.stopReason}`
+            },
+          },
           onEvent: params.onEvent,
         })
         history.push(toolResult)

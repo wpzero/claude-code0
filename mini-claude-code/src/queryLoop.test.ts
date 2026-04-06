@@ -408,4 +408,221 @@ describe('runQueryLoop', () => {
       ),
     ).toBe(true)
   })
+
+  test('spawn_agent runs a nested query loop and returns the final text', async () => {
+    const streams = [
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_parent_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_spawn',
+            name: 'spawn_agent',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json:
+              '{"prompt":"Inspect README.md","allowed_tools":["read_file"]}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_child_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_child_read',
+            name: 'read_file',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"path":"README.md"}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_child_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'README inspected successfully.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_parent_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Subagent summary received.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+    ]
+
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          const next = streams.shift() || []
+          for (const event of next) {
+            yield event as never
+          }
+        },
+      },
+    }
+
+    const result = await runQueryLoop({
+      client,
+      model: 'test-model',
+      history: [{ type: 'user', id: createId('user'), text: 'delegate read' }],
+      tools: getTools(),
+      maxIterations: 6,
+      workdir: process.cwd(),
+      requestToolApproval: async request =>
+        request.tool.name === 'spawn_agent' ? 'approved' : 'rejected',
+    })
+
+    const spawnResult = result.history.find(
+      message =>
+        message.type === 'tool_result' && message.toolName === 'spawn_agent',
+    )
+
+    expect(result.stopReason).toBe('completed')
+    expect(spawnResult).toBeDefined()
+    expect(spawnResult?.type).toBe('tool_result')
+    if (spawnResult?.type === 'tool_result') {
+      expect(spawnResult.isError).toBe(false)
+      expect(spawnResult.content).toContain('README inspected successfully.')
+    }
+  })
+
+  test('spawn_agent cannot recursively invoke itself', async () => {
+    const streams = [
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_parent_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_spawn',
+            name: 'spawn_agent',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json:
+              '{"prompt":"Try recursion","allowed_tools":["spawn_agent"]}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_parent_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Handled recursion failure.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+    ]
+
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          const next = streams.shift() || []
+          for (const event of next) {
+            yield event as never
+          }
+        },
+      },
+    }
+
+    const result = await runQueryLoop({
+      client,
+      model: 'test-model',
+      history: [{ type: 'user', id: createId('user'), text: 'delegate recursively' }],
+      tools: getTools(),
+      maxIterations: 4,
+      workdir: process.cwd(),
+      requestToolApproval: async () => 'approved',
+    })
+
+    expect(result.stopReason).toBe('completed')
+    expect(
+      result.history.some(
+        message =>
+          message.type === 'tool_result' &&
+          message.toolName === 'spawn_agent' &&
+          message.isError === true &&
+          message.content.includes('Subagent has no available tools'),
+      ),
+    ).toBe(true)
+  })
 })

@@ -55,8 +55,17 @@ export type ToolExecutionResult = {
 
 export type ToolApprovalRequirement = 'never' | 'always'
 
+export type SubagentRequest = {
+  prompt: string
+  allowedTools?: string[]
+}
+
 export type ToolContext = {
   workdir: string
+  client: AnthropicMessageClient
+  model: string
+  maxIterations: number
+  runSubagent(request: SubagentRequest): Promise<string>
 }
 
 export type ToolDefinition = {

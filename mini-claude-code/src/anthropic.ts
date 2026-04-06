@@ -12,7 +12,7 @@ import {
   createStreamAccumulator,
 } from './utils/messageTransform.js'
 
-const SYSTEM_PROMPT = [
+export const DEFAULT_SYSTEM_PROMPT = [
   'You are Mini Claude Code, a terminal coding assistant.',
   'Use tools when needed to inspect files, search content, write files, or run shell commands.',
   'Prefer read-only tools before write tools.',
@@ -53,12 +53,13 @@ export function buildAnthropicRequest(args: {
   model: string
   messages: Array<Record<string, unknown>>
   tools: ToolDefinition[]
+  systemPrompt?: string
   stream?: boolean
 }): Record<string, unknown> {
   const request = {
     model: args.model,
     max_tokens: 2048,
-    system: SYSTEM_PROMPT,
+    system: args.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
     ...(args.stream ? { stream: true } : {}),
     messages: args.messages,
     tools: args.tools.map(tool => ({
@@ -101,6 +102,7 @@ export async function streamAnthropicAssistantMessage(args: {
   model: string
   messages: Array<Record<string, unknown>>
   tools: ToolDefinition[]
+  systemPrompt?: string
   onSnapshot?(message: AssistantMessage): void
 }): Promise<AssistantMessage> {
   if (args.client.messages.stream) {
@@ -114,6 +116,7 @@ export async function streamAnthropicAssistantMessage(args: {
         model: args.model,
         messages: args.messages,
         tools: args.tools,
+        systemPrompt: args.systemPrompt,
         stream: true,
       }),
     )) {
@@ -152,6 +155,7 @@ export async function streamAnthropicAssistantMessage(args: {
       model: args.model,
       messages: args.messages,
       tools: args.tools,
+      systemPrompt: args.systemPrompt,
     }),
   )
 

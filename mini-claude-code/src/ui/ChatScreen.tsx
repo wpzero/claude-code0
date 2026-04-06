@@ -3,6 +3,8 @@ import { Box, Text } from 'ink'
 import { runQueryLoop } from '../queryLoop.js'
 import { getTools } from '../toolRegistry.js'
 import type {
+  AgentCatalogState,
+  AgentDefinition,
   AnthropicMessageClient,
   ChatMessage,
   QueryLoopEvent,
@@ -20,6 +22,7 @@ export function ChatScreen(props: {
   model: string
   maxIterations: number
   workdir: string
+  agents: AgentDefinition[]
 }) {
   const [messages, setMessages] = React.useState<ChatMessage[]>([
     {
@@ -34,6 +37,10 @@ export function ChatScreen(props: {
   const [isBusy, setIsBusy] = React.useState(false)
   const [pendingApproval, setPendingApproval] =
     React.useState<ToolApprovalRequest | null>(null)
+  const [agentCatalogState, setAgentCatalogState] =
+    React.useState<AgentCatalogState>({
+      entriesByType: {},
+    })
   const tools = React.useMemo(() => getTools(), [])
   const approvalResolverRef = React.useRef<
     ((decision: ToolApprovalDecision) => void) | null
@@ -58,6 +65,10 @@ export function ChatScreen(props: {
     }
 
     if (event.type === 'tool_approval_requested') {
+      return
+    }
+
+    if (event.type === 'subagent_lifecycle') {
       return
     }
 
@@ -107,6 +118,8 @@ export function ChatScreen(props: {
           model: props.model,
           history: nextHistory,
           tools,
+          agents: props.agents,
+          agentCatalogState,
           maxIterations: props.maxIterations,
           workdir: props.workdir,
           onEvent: appendEvent,
@@ -114,6 +127,7 @@ export function ChatScreen(props: {
         })
 
         setMessages(result.history)
+        setAgentCatalogState(result.agentCatalogState)
       } finally {
         approvalResolverRef.current = null
         setPendingApproval(null)
@@ -125,6 +139,8 @@ export function ChatScreen(props: {
       isBusy,
       messages,
       pendingApproval,
+      agentCatalogState,
+      props.agents,
       props.client,
       props.maxIterations,
       props.model,

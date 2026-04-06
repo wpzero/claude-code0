@@ -4,6 +4,8 @@ export type UserMessage = {
   type: 'user'
   id: string
   text: string
+  isInjected?: boolean
+  injectionKind?: 'agent_listing'
 }
 
 export type AssistantTextBlock = {
@@ -55,8 +57,23 @@ export type ToolExecutionResult = {
 
 export type ToolApprovalRequirement = 'never' | 'always'
 
+export type AgentDefinition = {
+  agentType: string
+  description: string
+  prompt: string
+  tools?: string[]
+  model?: string
+  source: 'built-in' | 'project'
+  filePath?: string
+}
+
+export type AgentCatalogState = {
+  entriesByType: Record<string, string>
+}
+
 export type SubagentRequest = {
   prompt: string
+  agentType?: string
   allowedTools?: string[]
 }
 
@@ -65,6 +82,7 @@ export type ToolContext = {
   client: AnthropicMessageClient
   model: string
   maxIterations: number
+  agents: AgentDefinition[]
   runSubagent(request: SubagentRequest): Promise<string>
 }
 
@@ -99,11 +117,20 @@ export type ToolApprovalRequest = {
 
 export type ToolApprovalDecision = 'approved' | 'rejected'
 
+export type SubagentStatus = 'started' | 'finished'
+
+export type SubagentLifecycleEvent = {
+  type: 'subagent_lifecycle'
+  status: SubagentStatus
+  summary: string
+}
+
 export type QueryLoopEvent =
   | { type: 'assistant_stream'; message: AssistantMessage }
   | { type: 'assistant'; message: AssistantMessage }
   | { type: 'tool_result'; message: ToolResultMessage }
   | { type: 'tool_approval_requested'; request: ToolApprovalRequest }
+  | { type: 'subagent_lifecycle'; event: SubagentLifecycleEvent }
   | { type: 'system'; message: SystemMessage }
 
 export type AnthropicStreamEvent = {

@@ -1,4 +1,6 @@
 import { streamAnthropicAssistantMessage } from './anthropic.js'
+import { createAgentListingInjection } from './agents.js'
+import { resolveAgentModel } from './agentModels.js'
 import { executeToolCall } from './toolExecutor.js'
 import {
   createId,
@@ -6,8 +8,11 @@ import {
   toAnthropicMessages,
 } from './utils/messageTransform.js'
 import type {
+  AgentCatalogState,
+  AgentDefinition,
   AnthropicMessageClient,
   ChatMessage,
+  SubagentLifecycleEvent,
   SubagentRequest,
   ToolApprovalDecision,
   ToolApprovalRequest,
@@ -45,11 +50,37 @@ function extractFinalAssistantText(history: ChatMessage[]): string {
   return ''
 }
 
+function summarizePrompt(text: string, maxLength = 80): string {
+  const normalized = text.trim().replace(/\s+/g, ' ')
+  if (normalized.length <= maxLength) {
+    return normalized
+  }
+  return `${normalized.slice(0, maxLength - 3)}...`
+}
+
+function emitSubagentLifecycle(
+  onEvent: ((event: QueryLoopEvent) => void) | undefined,
+  event: SubagentLifecycleEvent,
+): void {
+  onEvent?.({ type: 'subagent_lifecycle', event })
+  onEvent?.({
+    type: 'system',
+    message: {
+      type: 'system',
+      id: createId('system'),
+      level: 'info',
+      text: `[subagent] ${event.status}: ${event.summary}`,
+    },
+  })
+}
+
 export async function runQueryLoop(params: {
   client: AnthropicMessageClient
   model: string
   history: ChatMessage[]
   tools: ToolDefinition[]
+  agents?: AgentDefinition[]
+  agentCatalogState?: AgentCatalogState
   maxIterations: number
   workdir: string
   systemPrompt?: string
@@ -59,17 +90,30 @@ export async function runQueryLoop(params: {
   ) => Promise<ToolApprovalDecision>
 }): Promise<{
   history: ChatMessage[]
+  agentCatalogState: AgentCatalogState
   stopReason: 'completed' | 'max_iterations' | 'error'
 }> {
   let history = [...params.history]
+  let agentCatalogState: AgentCatalogState = params.agentCatalogState ?? {
+    entriesByType: {},
+  }
+  const agents = params.agents ?? []
 
   for (let iteration = 0; iteration < params.maxIterations; iteration += 1) {
     try {
-      const apiMessages = toAnthropicMessages(history)
+      const injection = createAgentListingInjection({
+        history,
+        agents,
+        availableToolNames: params.tools.map(tool => tool.name),
+        catalogState: agentCatalogState,
+      })
+      agentCatalogState = injection.catalogState
+      const apiMessages = toAnthropicMessages(injection.injectedHistory)
       debugLog('query.iteration.start', {
         iteration: iteration + 1,
         historyCount: history.length,
         apiMessageCount: apiMessages.length,
+        injectedAgentListing: injection.injected,
       })
 
       const assistantMessage = await streamAnthropicAssistantMessage({
@@ -99,7 +143,7 @@ export async function runQueryLoop(params: {
       )
 
       if (toolCalls.length === 0) {
-        return { history, stopReason: 'completed' }
+        return { history, agentCatalogState, stopReason: 'completed' }
       }
 
       for (const toolCall of toolCalls) {
@@ -151,24 +195,69 @@ export async function runQueryLoop(params: {
             client: params.client,
             model: params.model,
             maxIterations: params.maxIterations,
+            agents,
             runSubagent: async (request: SubagentRequest) => {
-              const childTools = params.tools.filter(tool => {
+              const promptSummary = summarizePrompt(request.prompt)
+              emitSubagentLifecycle(params.onEvent, {
+                type: 'subagent_lifecycle',
+                status: 'started',
+                summary: promptSummary,
+              })
+
+              const selectedAgent = request.agentType
+                ? agents.find(agent => agent.agentType === request.agentType)
+                : undefined
+
+              if (request.agentType && !selectedAgent) {
+                throw new Error(
+                  `Unknown agent_type: ${request.agentType}. Available agents: ${agents.map(agent => agent.agentType).join(', ') || 'none'}`,
+                )
+              }
+
+              const baseChildTools = params.tools.filter(tool => {
                 if (tool.name === 'spawn_agent') {
                   return false
                 }
-                if (!request.allowedTools || request.allowedTools.length === 0) {
+                if (!selectedAgent?.tools?.length) {
                   return true
                 }
-                return request.allowedTools.includes(tool.name)
+                return selectedAgent.tools.includes(tool.name)
               })
 
-              if (childTools.length === 0) {
+              const filteredChildTools =
+                request.allowedTools && request.allowedTools.length > 0
+                  ? baseChildTools.filter(tool =>
+                      request.allowedTools?.includes(tool.name),
+                    )
+                  : baseChildTools
+
+              if (filteredChildTools.length === 0) {
+                emitSubagentLifecycle(params.onEvent, {
+                  type: 'subagent_lifecycle',
+                  status: 'finished',
+                  summary: 'failed: no available tools',
+                })
+                if (request.agentType && request.allowedTools?.length) {
+                  throw new Error(
+                    `Requested allowed_tools excludes all tools available to agent_type ${request.agentType}.`,
+                  )
+                }
                 throw new Error('Subagent has no available tools.')
               }
 
+              params.onEvent?.({
+                type: 'system',
+                message: {
+                  type: 'system',
+                  id: createId('system'),
+                  level: 'info',
+                  text: `[subagent] tools: ${filteredChildTools.map(tool => tool.name).join(', ')}`,
+                },
+              })
+
               const childResult = await runQueryLoop({
                 client: params.client,
-                model: params.model,
+                model: resolveAgentModel(selectedAgent?.model, params.model),
                 history: [
                   {
                     type: 'user',
@@ -176,14 +265,51 @@ export async function runQueryLoop(params: {
                     text: request.prompt,
                   },
                 ],
-                tools: childTools,
+                tools: filteredChildTools,
+                agents: [],
                 maxIterations: Math.min(params.maxIterations, 6),
                 workdir: params.workdir,
-                systemPrompt: SUBAGENT_SYSTEM_PROMPT,
+                systemPrompt: selectedAgent?.prompt ?? SUBAGENT_SYSTEM_PROMPT,
                 requestToolApproval: params.requestToolApproval,
+                onEvent: childEvent => {
+                  if (
+                    childEvent.type === 'system' &&
+                    childEvent.message.level === 'tool_progress'
+                  ) {
+                    params.onEvent?.({
+                      type: 'system',
+                      message: {
+                        type: 'system',
+                        id: createId('system'),
+                        level: 'info',
+                        text: `[subagent] ${childEvent.message.text}`,
+                      },
+                    })
+                    return
+                  }
+
+                  if (childEvent.type === 'tool_result') {
+                    params.onEvent?.({
+                      type: 'system',
+                      message: {
+                        type: 'system',
+                        id: createId('system'),
+                        level: childEvent.message.isError ? 'error' : 'info',
+                        text: `[subagent] ${childEvent.message.toolName}${childEvent.message.isError ? ' failed' : ' finished'}`,
+                      },
+                    })
+                  }
+                },
               })
 
               const finalText = extractFinalAssistantText(childResult.history)
+              emitSubagentLifecycle(params.onEvent, {
+                type: 'subagent_lifecycle',
+                status: 'finished',
+                summary: finalText
+                  ? summarizePrompt(finalText)
+                  : `stopReason=${childResult.stopReason}`,
+              })
               if (finalText) {
                 return finalText
               }
@@ -214,7 +340,7 @@ export async function runQueryLoop(params: {
       }
       history.push(message)
       params.onEvent?.({ type: 'system', message })
-      return { history, stopReason: 'error' }
+      return { history, agentCatalogState, stopReason: 'error' }
     }
   }
 
@@ -226,5 +352,5 @@ export async function runQueryLoop(params: {
   }
   history.push(limitMessage)
   params.onEvent?.({ type: 'system', message: limitMessage })
-  return { history, stopReason: 'max_iterations' }
+  return { history, agentCatalogState, stopReason: 'max_iterations' }
 }

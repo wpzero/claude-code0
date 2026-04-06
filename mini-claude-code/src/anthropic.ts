@@ -18,6 +18,8 @@ export const DEFAULT_SYSTEM_PROMPT = [
   'Prefer read-only tools before write tools.',
   'Never reference tools that are not in the tools list.',
   'When a tool returns an error, adapt and continue if possible.',
+  'User messages may include <system-reminder> tags injected by the system.',
+  '<system-reminder> contains trusted system context such as available agent types and updates.',
 ].join(' ')
 
 export function getAnthropicClientOptions(config: Pick<

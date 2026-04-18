@@ -71,6 +71,30 @@ export type AgentCatalogState = {
   entriesByType: Record<string, string>
 }
 
+export type TodoStatus = 'pending' | 'in_progress' | 'completed'
+
+export type TodoItem = {
+  content: string
+  activeForm: string
+  status: TodoStatus
+}
+
+export type TodoList = TodoItem[]
+
+export type TodoOwner = {
+  id: string
+  title: string
+}
+
+export type TodoOwnerState = {
+  title: string
+  todos: TodoList
+}
+
+export type TodoState = {
+  byOwner: Record<string, TodoOwnerState>
+}
+
 export type SubagentRequest = {
   prompt: string
   agentType?: string
@@ -83,6 +107,9 @@ export type ToolContext = {
   model: string
   maxIterations: number
   agents: AgentDefinition[]
+  todoState: TodoState
+  todoOwner: TodoOwner
+  setTodos(todos: TodoList): void
   runSubagent(request: SubagentRequest): Promise<string>
 }
 

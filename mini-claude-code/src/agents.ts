@@ -5,6 +5,7 @@ import type {
   AgentDefinition,
   ChatMessage,
 } from './types.js'
+import { TODO_WRITE_TOOL_NAME } from './todos.js'
 import { createId } from './utils/messageTransform.js'
 
 const AGENT_DIR = '.mini-claude/agents'
@@ -171,7 +172,9 @@ function getEffectiveTools(
   if (!agent.tools || agent.tools.length === 0) {
     return baseTools
   }
-  return baseTools.filter(name => agent.tools?.includes(name))
+  return baseTools.filter(
+    name => name === TODO_WRITE_TOOL_NAME || agent.tools?.includes(name),
+  )
 }
 
 function formatAgentLine(

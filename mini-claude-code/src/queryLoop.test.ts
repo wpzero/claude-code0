@@ -535,6 +535,93 @@ describe('runQueryLoop', () => {
     ).toBe(true)
   })
 
+  test('todo_write stores todos for the main session', async () => {
+    const streams = [
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_todo',
+            name: 'todo_write',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json:
+              '{"todos":[{"content":"Read README","activeForm":"Reading README","status":"in_progress"},{"content":"Summarize repo","activeForm":"Summarizing repo","status":"pending"}]}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Todo updated.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+    ]
+
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          const next = streams.shift() || []
+          for (const event of next) {
+            yield event as never
+          }
+        },
+      },
+    }
+
+    const result = await runQueryLoop({
+      client,
+      model: 'test-model',
+      history: [{ type: 'user', id: createId('user'), text: 'track this work' }],
+      tools: getTools(),
+      maxIterations: 4,
+      workdir: process.cwd(),
+    })
+
+    expect(result.stopReason).toBe('completed')
+    expect(result.todoState.byOwner.main?.todos).toEqual([
+      {
+        content: 'Read README',
+        activeForm: 'Reading README',
+        status: 'in_progress',
+      },
+      {
+        content: 'Summarize repo',
+        activeForm: 'Summarizing repo',
+        status: 'pending',
+      },
+    ])
+  })
+
   test('spawn_agent runs a nested query loop and returns the final text', async () => {
     const events: string[] = []
     const requestedModels: string[] = []
@@ -687,6 +774,145 @@ describe('runQueryLoop', () => {
       'claude-sonnet-4-5',
       'claude-sonnet-4-5',
       'test-model',
+    ])
+  })
+
+  test('subagent can maintain its own todo list', async () => {
+    const streams = [
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_parent_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_spawn',
+            name: 'spawn_agent',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json: '{"prompt":"Track and summarize the repo"}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_child_1', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: {
+            type: 'tool_use',
+            id: 'tool_child_todo',
+            name: 'todo_write',
+            input: {},
+          },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: {
+            type: 'input_json_delta',
+            partial_json:
+              '{"todos":[{"content":"Inspect repo","activeForm":"Inspecting repo","status":"in_progress"},{"content":"Write summary","activeForm":"Writing summary","status":"pending"}]}',
+          },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_child_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Subagent is tracking progress.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+      [
+        {
+          type: 'message_start',
+          message: { id: 'assistant_parent_2', content: [] },
+        },
+        {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+        {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Parent received child summary.' },
+        },
+        { type: 'content_block_stop', index: 0 },
+        { type: 'message_stop' },
+      ],
+    ]
+
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream() {
+          const next = streams.shift() || []
+          for (const event of next) {
+            yield event as never
+          }
+        },
+      },
+    }
+
+    const result = await runQueryLoop({
+      client,
+      model: 'test-model',
+      history: [{ type: 'user', id: createId('user'), text: 'delegate tracking' }],
+      tools: getTools(),
+      agents: [],
+      maxIterations: 6,
+      workdir: process.cwd(),
+      requestToolApproval: async request =>
+        request.tool.name === 'spawn_agent' ? 'approved' : 'rejected',
+    })
+
+    const subagentOwners = Object.entries(result.todoState.byOwner).filter(
+      ([ownerId]) => ownerId !== 'main',
+    )
+
+    expect(result.stopReason).toBe('completed')
+    expect(subagentOwners).toHaveLength(1)
+    expect(subagentOwners[0]?.[1].todos).toEqual([
+      {
+        content: 'Inspect repo',
+        activeForm: 'Inspecting repo',
+        status: 'in_progress',
+      },
+      {
+        content: 'Write summary',
+        activeForm: 'Writing summary',
+        status: 'pending',
+      },
     ])
   })
 
@@ -891,6 +1117,116 @@ describe('runQueryLoop', () => {
           message.toolName === 'spawn_agent' &&
           message.isError === true &&
           message.content.includes('Subagent has no available tools'),
+      ),
+    ).toBe(true)
+  })
+
+  test('injects a hidden todo reminder after three assistant turns without todo updates', async () => {
+    const requests: Record<string, unknown>[] = []
+    const client: AnthropicMessageClient = {
+      messages: {
+        async create() {
+          throw new Error('unexpected create call')
+        },
+        async *stream(input) {
+          requests.push(input)
+          yield {
+            type: 'message_start',
+            message: { id: 'assistant_final', content: [] },
+          } as never
+          yield {
+            type: 'content_block_start',
+            index: 0,
+            content_block: { type: 'text', text: '' },
+          } as never
+          yield {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'Done.' },
+          } as never
+          yield { type: 'content_block_stop', index: 0 } as never
+          yield { type: 'message_stop' } as never
+        },
+      },
+    }
+
+    await runQueryLoop({
+      client,
+      model: 'test-model',
+      history: [
+        { type: 'user', id: createId('user'), text: 'start task' },
+        {
+          type: 'assistant',
+          id: createId('assistant'),
+          content: [
+            {
+              type: 'tool_use',
+              id: 'todo_1',
+              name: 'todo_write',
+              input: {
+                todos: [
+                  {
+                    content: 'Inspect repo',
+                    activeForm: 'Inspecting repo',
+                    status: 'in_progress',
+                  },
+                ],
+              },
+            },
+          ],
+        },
+        {
+          type: 'tool_result',
+          id: createId('tool_result'),
+          toolUseId: 'todo_1',
+          toolName: 'todo_write',
+          content: 'Updated todo list for Main session.',
+          isError: false,
+        },
+        {
+          type: 'assistant',
+          id: createId('assistant'),
+          content: [{ type: 'text', text: 'Step one.' }],
+        },
+        { type: 'user', id: createId('user'), text: 'continue' },
+        {
+          type: 'assistant',
+          id: createId('assistant'),
+          content: [{ type: 'text', text: 'Step two.' }],
+        },
+        { type: 'user', id: createId('user'), text: 'continue again' },
+        {
+          type: 'assistant',
+          id: createId('assistant'),
+          content: [{ type: 'text', text: 'Step three.' }],
+        },
+        { type: 'user', id: createId('user'), text: 'final step' },
+      ],
+      tools: getTools(),
+      todoState: {
+        byOwner: {
+          main: {
+            title: 'Main session',
+            todos: [
+              {
+                content: 'Inspect repo',
+                activeForm: 'Inspecting repo',
+                status: 'in_progress',
+              },
+            ],
+          },
+        },
+      },
+      maxIterations: 1,
+      workdir: process.cwd(),
+    })
+
+    const firstMessages = requests[0]?.messages as Array<Record<string, unknown>>
+    expect(
+      firstMessages.some(
+        message =>
+          typeof message.content === 'string' &&
+          String(message.content).includes('update the todo list with todo_write'),
       ),
     ).toBe(true)
   })

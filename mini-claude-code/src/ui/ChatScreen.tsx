@@ -1,6 +1,7 @@
 import React from 'react'
 import { Box, Text } from 'ink'
 import { runQueryLoop } from '../queryLoop.js'
+import { createEmptyTodoState } from '../todos.js'
 import { getTools } from '../toolRegistry.js'
 import type {
   AgentCatalogState,
@@ -8,6 +9,7 @@ import type {
   AnthropicMessageClient,
   ChatMessage,
   QueryLoopEvent,
+  TodoState,
   ToolApprovalDecision,
   ToolApprovalRequest,
 } from '../types.js'
@@ -16,6 +18,7 @@ import { ApprovalPrompt } from './ApprovalPrompt.js'
 import { MessageList } from './MessageList.js'
 import { PromptInput } from './PromptInput.js'
 import { StatusBar } from './StatusBar.js'
+import { TodoPanel } from './TodoPanel.js'
 
 export function ChatScreen(props: {
   client: AnthropicMessageClient
@@ -41,6 +44,9 @@ export function ChatScreen(props: {
     React.useState<AgentCatalogState>({
       entriesByType: {},
     })
+  const [todoState, setTodoState] = React.useState<TodoState>(
+    createEmptyTodoState(),
+  )
   const tools = React.useMemo(() => getTools(), [])
   const approvalResolverRef = React.useRef<
     ((decision: ToolApprovalDecision) => void) | null
@@ -120,6 +126,7 @@ export function ChatScreen(props: {
           tools,
           agents: props.agents,
           agentCatalogState,
+          todoState,
           maxIterations: props.maxIterations,
           workdir: props.workdir,
           onEvent: appendEvent,
@@ -128,6 +135,7 @@ export function ChatScreen(props: {
 
         setMessages(result.history)
         setAgentCatalogState(result.agentCatalogState)
+        setTodoState(result.todoState)
       } finally {
         approvalResolverRef.current = null
         setPendingApproval(null)
@@ -140,6 +148,7 @@ export function ChatScreen(props: {
       messages,
       pendingApproval,
       agentCatalogState,
+      todoState,
       props.agents,
       props.client,
       props.maxIterations,
@@ -161,6 +170,7 @@ export function ChatScreen(props: {
         isBusy={isBusy}
         isAwaitingApproval={Boolean(pendingApproval)}
       />
+      <TodoPanel todoState={todoState} />
       <Box marginTop={1} marginBottom={1} flexDirection="column">
         <MessageList
           messages={

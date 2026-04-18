@@ -1,6 +1,14 @@
 import { streamAnthropicAssistantMessage } from './anthropic.js'
 import { createAgentListingInjection } from './agents.js'
 import { resolveAgentModel } from './agentModels.js'
+import {
+  createEmptyTodoState,
+  createMainTodoOwner,
+  createSubagentTodoOwner,
+  createTodoReminderInjection,
+  TODO_WRITE_TOOL_NAME,
+  setOwnerTodos,
+} from './todos.js'
 import { executeToolCall } from './toolExecutor.js'
 import {
   createId,
@@ -17,6 +25,8 @@ import type {
   ToolApprovalDecision,
   ToolApprovalRequest,
   QueryLoopEvent,
+  TodoOwner,
+  TodoState,
   ToolDefinition,
 } from './types.js'
 import { debugLog } from './debug.js'
@@ -81,6 +91,8 @@ export async function runQueryLoop(params: {
   tools: ToolDefinition[]
   agents?: AgentDefinition[]
   agentCatalogState?: AgentCatalogState
+  todoState?: TodoState
+  todoOwner?: TodoOwner
   maxIterations: number
   workdir: string
   systemPrompt?: string
@@ -91,29 +103,38 @@ export async function runQueryLoop(params: {
 }): Promise<{
   history: ChatMessage[]
   agentCatalogState: AgentCatalogState
+  todoState: TodoState
   stopReason: 'completed' | 'max_iterations' | 'error'
 }> {
   let history = [...params.history]
   let agentCatalogState: AgentCatalogState = params.agentCatalogState ?? {
     entriesByType: {},
   }
+  let todoState = params.todoState ?? createEmptyTodoState()
   const agents = params.agents ?? []
+  const todoOwner = params.todoOwner ?? createMainTodoOwner()
 
   for (let iteration = 0; iteration < params.maxIterations; iteration += 1) {
     try {
-      const injection = createAgentListingInjection({
+      const agentInjection = createAgentListingInjection({
         history,
         agents,
         availableToolNames: params.tools.map(tool => tool.name),
         catalogState: agentCatalogState,
       })
-      agentCatalogState = injection.catalogState
-      const apiMessages = toAnthropicMessages(injection.injectedHistory)
+      agentCatalogState = agentInjection.catalogState
+      const todoInjection = createTodoReminderInjection({
+        history: agentInjection.injectedHistory,
+        todoState,
+        todoOwner,
+      })
+      const apiMessages = toAnthropicMessages(todoInjection.injectedHistory)
       debugLog('query.iteration.start', {
         iteration: iteration + 1,
         historyCount: history.length,
         apiMessageCount: apiMessages.length,
-        injectedAgentListing: injection.injected,
+        injectedAgentListing: agentInjection.injected,
+        injectedTodoReminder: todoInjection.injected,
       })
 
       const assistantMessage = await streamAnthropicAssistantMessage({
@@ -143,7 +164,7 @@ export async function runQueryLoop(params: {
       )
 
       if (toolCalls.length === 0) {
-        return { history, agentCatalogState, stopReason: 'completed' }
+        return { history, agentCatalogState, todoState, stopReason: 'completed' }
       }
 
       for (const toolCall of toolCalls) {
@@ -196,6 +217,11 @@ export async function runQueryLoop(params: {
             model: params.model,
             maxIterations: params.maxIterations,
             agents,
+            todoState,
+            todoOwner,
+            setTodos: todos => {
+              todoState = setOwnerTodos(todoState, todoOwner, todos)
+            },
             runSubagent: async (request: SubagentRequest) => {
               const promptSummary = summarizePrompt(request.prompt)
               emitSubagentLifecycle(params.onEvent, {
@@ -217,6 +243,9 @@ export async function runQueryLoop(params: {
               const baseChildTools = params.tools.filter(tool => {
                 if (tool.name === 'spawn_agent') {
                   return false
+                }
+                if (tool.name === TODO_WRITE_TOOL_NAME) {
+                  return true
                 }
                 if (!selectedAgent?.tools?.length) {
                   return true
@@ -255,6 +284,7 @@ export async function runQueryLoop(params: {
                 },
               })
 
+              const childTodoOwner = createSubagentTodoOwner(request.agentType)
               const childResult = await runQueryLoop({
                 client: params.client,
                 model: resolveAgentModel(selectedAgent?.model, params.model),
@@ -267,6 +297,8 @@ export async function runQueryLoop(params: {
                 ],
                 tools: filteredChildTools,
                 agents: [],
+                todoState,
+                todoOwner: childTodoOwner,
                 maxIterations: Math.min(params.maxIterations, 6),
                 workdir: params.workdir,
                 systemPrompt: selectedAgent?.prompt ?? SUBAGENT_SYSTEM_PROMPT,
@@ -301,6 +333,7 @@ export async function runQueryLoop(params: {
                   }
                 },
               })
+              todoState = childResult.todoState
 
               const finalText = extractFinalAssistantText(childResult.history)
               emitSubagentLifecycle(params.onEvent, {
@@ -340,7 +373,7 @@ export async function runQueryLoop(params: {
       }
       history.push(message)
       params.onEvent?.({ type: 'system', message })
-      return { history, agentCatalogState, stopReason: 'error' }
+      return { history, agentCatalogState, todoState, stopReason: 'error' }
     }
   }
 
@@ -352,5 +385,5 @@ export async function runQueryLoop(params: {
   }
   history.push(limitMessage)
   params.onEvent?.({ type: 'system', message: limitMessage })
-  return { history, agentCatalogState, stopReason: 'max_iterations' }
+  return { history, agentCatalogState, todoState, stopReason: 'max_iterations' }
 }
